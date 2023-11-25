@@ -145,33 +145,23 @@ def test(it):
 
 if __name__ == "__main__":
     args = get_args()
-    if args.check_mem:
-        initial_memory = torch.cuda.memory_allocated()
     augmentator = AugmentData(args)
     logger, ckpt_mgr, writer = init_logging(args)
     train_iter, val_iter = load_iterators(args,logger,augmentator)
     scheduler, optimizer, model = load_model(args,logger)
 
     num_parameters = sum(p.numel() for p in model.parameters())
-    logger.info(f"Model has {num_parameters} parameters, needing {num_parameters*4:,} Bytes of VRAM.")
+    logger.info(f"Model has {num_parameters} parameters")
 
     roll,pitch,yaw = augmentator.gen_roll_pitch_yaw(False)
     logger.info(f"Data will be augmented with the angles: \n\t{roll}\n\t{pitch}\n\t{yaw}")
-
-    if args.check_mem:
-        secondary_memory = torch.cuda.memory_allocated()
 
     # Main loop
     logger.info('[Train] Start training...')
     it = 1
     initial_test_memory, final_test_memory = 0,0
     while it <= args.max_iters:
-        if args.check_mem:
-            initial_loop_memory = torch.cuda.memory_allocated()
         train(it)
-        if args.check_mem:
-            secondary_loop_memory = torch.cuda.memory_allocated()
-            max_loop_memory = torch.cuda.max_memory_allocated()
         if not args.disable_val and (it % args.val_freq == 0 or it == args.max_iters):
             validate_inspect(it)
             opt_states = {
@@ -180,10 +170,5 @@ if __name__ == "__main__":
             }
             ckpt_mgr.save(model, args, 0, others=opt_states, step=it)
         if not args.disable_test and (it % args.test_freq == 0 or it == args.max_iters):
-            if args.check_mem:
-                initial_test_memory = torch.cuda.memory_allocated()
             test(it)
-            if args.check_mem:
-                final_test_memory = torch.cuda.memory_allocated()
-                logger.info(f"""Memory Usage as follows:\n\t Initial Mem: {initial_memory:,} | Post load Mem: {secondary_memory-initial_memory:,} | Pre Train Mem: {initial_loop_memory-initial_memory:,} | Post Train Mem: {secondary_loop_memory-initial_memory:,} | Max Train Mem: {max_loop_memory-initial_memory:,} | Pre Test Mem: {initial_test_memory-initial_memory:,} | Post Test Mem: {final_test_memory-initial_memory:,}""")
         it += 1

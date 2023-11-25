@@ -1,5 +1,4 @@
 import torch
-from torch.nn import Module, Linear
 from torch.optim.lr_scheduler import LambdaLR
 import numpy as np
 
@@ -48,6 +47,12 @@ def get_linear_scheduler(optimizer, start_epoch, end_epoch, start_lr, end_lr):
     return LambdaLR(optimizer, lr_lambda=lr_func)
 
 def get_cosine_scheduler(optimizer, start_epoch, end_epoch, start_lr, end_lr):
+    """
+    Not used in this code - makes the function between the start 
+    and end epoch of of the learning rate like a cos function instead of 
+    a linear one like used in the original work. As I did not look at LR 
+    adjustments, it went unused.
+    """
     def lr_func(epoch):
         if epoch < start_epoch:
             return 1.0

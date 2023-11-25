@@ -24,7 +24,8 @@ class_to_index = {cls: index for index, cls in enumerate(unique_classes)}
 net_args = dict(
     num_features=3,
     num_points=args.sample_num_points,
-    num_classes=len(args.categories)
+    num_classes=len(args.categories),
+    batchnorm=args.batch_norm
 )
 class_to_index["__model_parameters__"] = net_args
 
@@ -52,27 +53,7 @@ else:
 logger.info(args)
 
 # Datasets and loaders
-
 train_iter, val_iter = load_iterators(args, logger, augmentator)
-
-# test_dset = ShapeNetCore(
-#     path=args.dataset_path,
-#     cates=args.categories,
-#     split='test',
-#     scale_mode=args.scale_mode,
-#     seed = args.seed,
-#     even_out=True,
-#     logger=logger
-# )
-# test_iter = data_iterator(DataLoader(
-#     val_dset,
-#     batch_size=args.val_batch_size,
-#     num_workers=0,
-#     ),
-#     **kwargs
-# )
-
-
 
 # Define loss function and optimizer
 optimizer = torch.optim.Adam(model.parameters(), 

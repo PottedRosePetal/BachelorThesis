@@ -23,11 +23,13 @@ class_to_index = {cls: index for index, cls in enumerate(unique_classes)}
 class_to_index["__model_parameters__"] = dict(
     num_points=args.sample_num_points,
     point_dim=3,
-    num_disc_angles=augmentator.disc_angles
+    num_disc_angles=augmentator.disc_angles, 
+    batchnorm=args.batch_norm,
+    spher_coord=args.spherical_coordinates
 )
 
 model = PointNetAngularClassifier(**class_to_index["__model_parameters__"]).to(args.device)
-
+print(model)
 class_to_index["__assertion_args__"] = {}
 class_to_index["__assertion_args__"]["angle_deadzone"] = args.angle_deadzone
 class_to_index["__assertion_args__"]["num_classes"] = len(args.categories)
@@ -134,34 +136,6 @@ def validate():
     accuracy_y = correct[1].item() / total
     accuracy_z = correct[2].item() / total
     return accuracy_x, accuracy_y, accuracy_z
-
-#def test():
-    model.eval()
-    total_correct = 0
-    total_samples = 0
-
-    with torch.no_grad():
-        for i,batch in tqdm(test_iter_reduced):
-            x_test = batch['pointcloud'].to(args.device)
-            batchwise_class_test = batch["cate"]
-
-            class_index_test = torch.tensor([class_to_index[cls] for cls in batchwise_class_test], dtype=int).to(args.device)
-
-            # Forward
-            output_test = model(x_test)
-            predicted_class_index_test = torch.argmax(torch.nn.functional.softmax(output_test, dim=1), dim=1)
-
-            # Calculate accuracy for this batch
-            total_correct += (predicted_class_index_test == class_index_test).sum().item()
-            total_samples += class_index_test.size(0)
-
-            if args.test_size < i:
-                break
-
-    test_accuracy = total_correct / total_samples
-    return test_accuracy
-
-
 
 # Training loop
 logger.info('[Train] Start training...')

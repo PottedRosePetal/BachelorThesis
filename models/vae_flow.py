@@ -1,10 +1,15 @@
 import torch
 from torch.nn import Module
 
-from .common import *
-from .encoders import *
-from .diffusion import *
-from .flow import *
+from .common import (
+    reparameterize_gaussian, 
+    gaussian_entropy, 
+    standard_normal_logprob, 
+    truncated_normal_
+    )
+from .encoders import PointNetEncoder
+from .diffusion import DiffusionPoint, PointwiseNet, VarianceSchedule
+from .flow import build_latent_flow
 from utils.dataset import cate_to_list
 
 
@@ -47,7 +52,6 @@ class FlowVAE(Module):
             x:  Input point clouds, (B, N, d).
         """
         batch_size, _, _ = x.size()
-        # print(x.size())
         z_mu, z_sigma = self.encoder(x)
         z = reparameterize_gaussian(mean=z_mu, logvar=z_sigma)  # (B, F)
         

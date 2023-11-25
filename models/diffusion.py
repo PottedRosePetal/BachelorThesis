@@ -22,6 +22,7 @@ class VarianceSchedule(Module):
         elif mode == "cosine":
             # Cosine schedule from Alex Nichol & Prafulla Dhariwal, https://arxiv.org/pdf/2102.09672.pdf, 
             # https://github.com/openai/improved-diffusion/blob/783b6740edb79fdb7d063250db2c51cc9545dcd1/improved_diffusion/gaussian_diffusion.py#L18
+            # Also identical to https://github.com/openai/point-e/blob/main/point_e/diffusion/gaussian_diffusion.py
             betas = self.betas_for_alpha_bar(
                 num_steps,
                 lambda t: np.cos((t + cosine_arg) / (1+cosine_arg) * np.pi / 2) ** 2,
@@ -41,18 +42,14 @@ class VarianceSchedule(Module):
         alphas = 1 - betas
         alpha_bars = torch.cumprod(alphas, axis=0)
         
-        """        
         # log_alphas = torch.log(alphas)
         # for i in range(1, log_alphas.size(0)):  # 1 to T
         #     log_alphas[i] += log_alphas[i - 1]
         # alpha_bars_0 = log_alphas.exp()
-        # prob more efficient to use torch.cumprod(alphas, dim=0)? 
-        above implementation might be more numerically stable. However, way slower 
-        for large applications. 
-        
-        #alpha_bars = alpha_bars_1 = torch.cumprod(alphas, dim=0)
 
-        """
+        # above implementation might be more numerically stable. However, way slower 
+        # for large applications. 
+
         sigmas_flex = torch.sqrt(betas)
         sigmas_inflex = torch.zeros_like(sigmas_flex)
         for i in range(1, sigmas_flex.size(0)):
@@ -111,8 +108,8 @@ class PointwiseNet(Module):     #unet
         self.angle_embedding_x = Embedding(self.num_disc_angles, ang_emb_dim)
         self.angle_embedding_y = Embedding(self.num_disc_angles, ang_emb_dim)
         self.angle_embedding_z = Embedding(self.num_disc_angles, ang_emb_dim)
-        # dim should be roughly sqrt of num_classes, however, due to context being high-dimensional, we will take
-        # sqrt of whole ctx dim. sqrt(256+3) = 16
+        # dim could be roughly sqrt of num_classes, however, due to context being high-dimensional, 
+        # I will take sqrt of whole ctx dim. sqrt(256+3) = 16
         self.act = torch.nn.functional.leaky_relu
         self.residual = residual
 
@@ -128,12 +125,7 @@ class PointwiseNet(Module):     #unet
             ConcatSquashLinear(256, 128, combined_embedding_dim),
             ConcatSquashLinear(128, 3, combined_embedding_dim)
         ])
-        if self.batch_norm_activated:
-            self.batch_norms = torch.nn.ModuleList([
-                torch.nn.BatchNorm2d(num) for num in [3, 128, 256, 512]
-                ])
 
-        # self.batch_norm = nn.BatchNorm1d(2048)
         
     def forward(self, x:torch.Tensor, beta:torch.Tensor, context:torch.Tensor, class_index:torch.Tensor, angles:torch.Tensor):
         """
@@ -181,28 +173,9 @@ class PointwiseNet(Module):     #unet
             out = layer(ctx=ctx_emb, x=out)
 
             if i < len(self.layers) - 1:
-                num_features = out.size(2)
-                if self.batch_norm_activated and num_features <= self.batch_norm_threshold:
-                    
-                    if num_features == 3:
-                        bn_layer = self.batch_norms[0]
-                    elif num_features == 128:
-                        bn_layer = self.batch_norms[1]
-                    elif num_features == 256:
-                        bn_layer = self.batch_norms[2]
-                    elif num_features == 512:
-                        bn_layer = self.batch_norms[3]
-                    else:
-                        raise ValueError(f"Unsupported number of features: {num_features}")
-                    out:torch.Tensor = bn_layer((out.unsqueeze(2).transpose(1, 3)))
-                    out = out.transpose(1, 3).squeeze(2)
                 out = self.act(out)
 
-            # Apply residual connection if enabled and not in the first half of layers
-            if self.extended_residual and i >= len(self.layers) // 2:
-                out += intermediate_outputs[i - len(self.layers) // 2]
-
-        if self.residual and not self.extended_residual:
+        if self.residual:
             return out + x
         else:
             return out
@@ -221,7 +194,7 @@ class DiffusionPoint(Module):
             x_0:  Input point cloud, (B, N, d).     #B = batch N = number of points, d = 3D
             context:  Shape latent, (B, F).         #B = batch F = z -> x but in latent space/encoded and reparametrized
         """
-        batch_size, _, point_dim = x_0.size()       #B = batch size!, number of Points, dimensions of points, should be 3? coordinates?
+        batch_size, _, point_dim = x_0.size()       #B = batch size!, number of Points, dimensions of points, should be 3, coordinates
         if t == None:
             t = self.var_sched.uniform_sample_t(batch_size)
         alpha_bar = self.var_sched.alpha_bars[t]
@@ -232,10 +205,9 @@ class DiffusionPoint(Module):
 
         e_rand = torch.randn_like(x_0)  # (B, N, d)
         
-        e_theta = self.net(c0 * x_0 + c1 * e_rand, beta=beta, context=context, class_index=class_index, angles = angles) #e_theta is forward diffusion process
+        e_theta = self.net(c0 * x_0 + c1 * e_rand, beta=beta, context=context, class_index=class_index, angles = angles) 
+        #e_theta is forward diffusion process
         # this is q(x_T|x0) = N(x_T|sqrt(alpha_bar)*x_0, sqrt(1-alpha_bar)*I)
-        # alpha bar is the cumulative sum of alphas for each timestep, alpha is 1-beta. Why does this work? Idk.
-        # see https://youtu.be/HoKDTa5jHvg?t=821 for more info
 
         loss = torch.nn.functional.mse_loss(
             e_theta.view(-1, point_dim), 
@@ -246,13 +218,15 @@ class DiffusionPoint(Module):
 
     def sample(self, num_points, context, category_index, angles, point_dim=3, flexibility=0.0, ret_traj=False):
         batch_size = context.size(0)
-        x_T = torch.randn([batch_size, num_points, point_dim]).to(context.device)   #creates gaussian random tensor of size [batch_size, num_points, point_dim], aka (B, N, d)
-        traj = {self.var_sched.num_steps: x_T}          #trajectory of grad descent? why is the time T the key?
-        for t in range(self.var_sched.num_steps, 0, -1):    #goes from T to zero, T is prob complete object and 0 is random? Or other way around?
+        #creates gaussian random tensor of size [batch_size, num_points, point_dim], aka (B, N, d)
+        x_T = torch.randn([batch_size, num_points, point_dim]).to(context.device)   
+        traj = {self.var_sched.num_steps: x_T}
+        #goes from T to zero, T is is random, zero complete object
+        for t in range(self.var_sched.num_steps, 0, -1):    
             z = torch.randn_like(x_T) if t > 1 else torch.zeros_like(x_T)   
             alpha = self.var_sched.alphas[t]
-            alpha_bar = self.var_sched.alpha_bars[t]    #what does bar mean? -> sum of all alphas over time
-            sigma = self.var_sched.get_sigmas(t, flexibility)   #F = flexibility? whats flex.? sigma = return of encoding - what part?
+            alpha_bar = self.var_sched.alpha_bars[t]
+            sigma = self.var_sched.get_sigmas(t, flexibility)
 
             c0 = 1.0 / torch.sqrt(alpha)
             c1 = (1 - alpha) / torch.sqrt(1 - alpha_bar)
@@ -263,9 +237,9 @@ class DiffusionPoint(Module):
             category_index = torch.ones((batch_size,), dtype=int, device=context.device) * category_index
 
             e_theta = self.net(x_t, beta=beta, context=context, class_index=category_index, angles=angles)
-            #c0: scaling factor, c1: alpha probably learned, moves (more or less random) theta into right direction, sigma*z: learned movement in feature space?
+            # c0: scaling factor, c1: alpha probably learned, moves (more or less random) theta into right direction, 
+            # sigma*z: learned movement in feature space
             x_next = c0 * (x_t - c1 * e_theta) + sigma * z
-            # see https://youtu.be/HoKDTa5jHvg - algorithms section for more info
             traj[t-1] = x_next.detach()     # Stop gradient and save trajectory.
             traj[t] = traj[t].cpu()         # Move previous output to CPU memory.
             if not ret_traj:

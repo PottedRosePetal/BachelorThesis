@@ -189,6 +189,8 @@ class ShapeNetCore(Dataset):
         weight_per_sample = [1/counts_dict[pc["cate"]] for pc in self.pointclouds]
         return WeightedRandomSampler(weights=weight_per_sample, num_samples=total_items)
 
+# Code below was used to generate evened out code, but deprectated/not maintained due to it being a bad method
+
 # class ShapeNetCore(Dataset):
 
 #     GRAVITATIONAL_AXIS = 1

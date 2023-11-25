@@ -1,4 +1,3 @@
-import os
 import argparse
 import torch
 import torch.utils.tensorboard
@@ -89,7 +88,7 @@ val_dset = ShapeNetCore(
     scale_mode=args.scale_mode,
     transform=transform,
 )
-train_iter = get_data_iterator(DataLoader(
+train_iter = full_data_iterator(DataLoader(
     train_dset,
     batch_size=args.train_batch_size,
     num_workers=0,

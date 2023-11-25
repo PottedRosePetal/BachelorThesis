@@ -1,4 +1,3 @@
-import torch
 from torch.utils.data import DataLoader, random_split
 from utils.augmentation import AugmentData
 
@@ -24,8 +23,10 @@ def get_train_val_test_loaders(dataset, train_ratio, val_ratio, train_batch_size
 
 
 def full_data_iterator(iterable, augmentator=None):
-    """Allows training with DataLoaders in a single infinite loop:
-        for i, data in enumerate(inf_generator(train_loader)):
+    """
+    Allows training with DataLoaders in a single infinite loop:\n
+    for i, data in enumerate(inf_generator(train_loader)):\n
+    does not augment data in any way
     """
     iterator = iterable.__iter__()
     while True:
@@ -35,6 +36,11 @@ def full_data_iterator(iterable, augmentator=None):
             iterator = iterable.__iter__()
 
 def partial_augmentation_iterator(iterable, augmentator:AugmentData):
+    """
+    Allows training with DataLoaders in a single infinite loop:\n
+    for i, data in enumerate(inf_generator(train_loader)):\n
+    uses both unaugmented data and augmented data
+    """
     iterator = iterable.__iter__()
     j=0
     while True:
@@ -51,16 +57,16 @@ def partial_augmentation_iterator(iterable, augmentator:AugmentData):
 
 def full_augmentation_iterator(iterable, augmentator:AugmentData):
     """
-    only yields augmented/rotated data, infinite iterator
+    Allows training with DataLoaders in a single infinite loop:\n
+    for i, data in enumerate(inf_generator(train_loader)):\n
+    only yields augmented data
     """
     iterator = iterable.__iter__()
     j=0
-    
     while True:
         try:
             j+=1
             yield augmentator.augment_data(iterator.__next__(), it=j)
-            
 
         except StopIteration:
             iterator = iterable.__iter__()

@@ -22,13 +22,13 @@ def get_args(key = "gen"):
     # Arguments
     parser = argparse.ArgumentParser()
     # Model arguments
-    parser.add_argument('--model', type=str, default='flow', choices=['flow', 'gaussian'])
+    parser.add_argument('--model', type=str, default='gaussian', choices=['flow', 'gaussian'])
     parser.add_argument('--latent_dim', type=int, default=256)
-    parser.add_argument('--num_steps', type=int, default=100)
+    parser.add_argument('--num_steps', type=int, default=50)
     parser.add_argument('--beta_1', type=float, default=1e-4)
     parser.add_argument('--beta_T', type=float, default=0.02)
-    parser.add_argument('--sched_mode', type=str, default='linear')
-    parser.add_argument('--cosine_factor', type=float, default=0.0005)
+    parser.add_argument('--sched_mode', type=str, default='cosine')
+    parser.add_argument('--cosine_factor', type=float, default=0.0001)
     parser.add_argument('--flexibility', type=float, default=0.0)
     parser.add_argument('--truncate_std', type=float, default=2.0)
     parser.add_argument('--latent_flow_depth', type=int, default=14)
@@ -71,7 +71,7 @@ def get_args(key = "gen"):
     parser.add_argument('--iterator', type=str, default='full_augmentation') 
         #choices: "partial_augmentation", "no_augmentation", "full_augmentation"
     parser.add_argument('--aug_multiplier', type=int, default=3)
-    parser.add_argument('--jitter_percentage', type=float, default=0.05) #0.3 seems to be optimal, but for comparability I keep 0.05
+    parser.add_argument('--jitter_percentage', type=float, default=0.3) #0.3 seems to be optimal, but for comparability I keep 0.05
     parser.add_argument('--aug_iterations', type=int, default=1)
     parser.add_argument('--num_disc_angles', type=int, default=3) # higher means harder to train
     parser.add_argument('--angle_deadzone', type=float, default=torch.pi/2)
@@ -102,9 +102,16 @@ def get_args(key = "gen"):
     parser.add_argument('--cls_eval_index_name', type=str, default='ClassIndexing.json')
     parser.add_argument('--cls_eval_model_name', type=str, default='ckpt_0.000000_1000.pt')
 
-    parser.add_argument('--ang_eval_model_path', type=str, default='./logs_ang/ANG_2023_09_18__17_51_09')
+    parser.add_argument('--ang_eval_model_path', type=str, default='./logs_ang/ANG_2023_10_15__23_09_38_no_batchnorm')
     parser.add_argument('--ang_eval_index_name', type=str, default='ClassIndexing.json')
     parser.add_argument('--ang_eval_model_name', type=str, default='ckpt_0.000000_10000.pt')
+    parser.add_argument('--spherical_coordinates', type=eval, default=False, choices=[True, False])
+
+    # Test
+    parser.add_argument('--ckpt', type=str, default='./pretrained/GEN_airplane.pt')
+    parser.add_argument('--save_dir', type=str, default='./results')
+    parser.add_argument('--test_batch_size', type=int, default=64)
+
 
     args = parser.parse_args()
 
@@ -128,6 +135,23 @@ def init_logging(args):
     logger.info(args)
 
     return logger, ckpt_mgr, writer
+
+def init_test_logging(args):
+    seed_all(args.seed)
+
+    # Logging
+    if args.logging:
+        log_dir = get_new_log_dir(args.log_root, prefix='GEN_', postfix='_' + args.tag if args.tag is not None else '')
+        logger = get_logger('test', log_dir)
+        for k, v in vars(args).items():
+            logger.info('[ARGS::%s] %s' % (k, repr(v)))
+    else:
+        logger = get_logger('test', None)
+    logger.info(args)
+
+    return logger
+
+
 
 def load_iterators(args, logger, augmentator):
     logger.info('Loading datasets...')
@@ -190,6 +214,46 @@ def load_iterators(args, logger, augmentator):
 
     return  iterator(train_dataloader, augmentator), iterator(val_dataloader, augmentator)
 
+def load_test_iterators(args, logger, augmentator):
+    logger.info('Loading datasets...')
+
+    if args.iterator == "full_augmentation":
+        iterator = full_augmentation_iterator
+    elif args.iterator == "partial_augmentation":
+        iterator = partial_augmentation_iterator
+    elif args.iterator == "no_augmentation":
+        iterator = full_data_iterator
+    else:
+        raise ValueError("Chosen iterator not Implemented")
+
+    test_dset = ShapeNetCore(
+        path=args.dataset_path,
+        cates=args.categories,
+        split='test',
+        scale_mode=args.scale_mode,
+        seed = args.seed,
+        even_out=args.even_out,
+        logger=logger
+    )
+    dset_size = len(test_dset)
+    logger.info(f"[Test] Test dataset size: {len(test_dset)}")
+
+    if args.sampler:
+        test_sampler = test_dset.get_sampler()
+    else:
+        test_sampler = None
+
+    test_dataloader = DataLoader(
+        test_dset,
+        batch_size=args.test_batch_size,
+        num_workers=0,
+        sampler=test_sampler,
+        drop_last=True
+    )
+
+    return iterator(test_dataloader, augmentator), dset_size
+
+
 def load_model(args, logger):
     # Model
     logger.info('Building model...')
@@ -229,3 +293,18 @@ def load_model(args, logger):
     )
 
     return scheduler, optimizer, model
+
+
+def load_model_eval(args, logger, ckpt):
+    # Model
+    logger.info('Loading model...')
+    if ckpt['args'].model == 'gaussian':
+        model = GaussianVAE(ckpt['args']).to(args.device)
+    elif ckpt['args'].model == 'flow':
+        model = FlowVAE(ckpt['args']).to(args.device)
+    logger.info(repr(model))
+    # if ckpt['args'].spectral_norm:
+    #     add_spectral_norm(model, logger=logger)
+    model.load_state_dict(ckpt['state_dict'])
+
+    return model

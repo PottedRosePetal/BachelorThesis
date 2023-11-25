@@ -17,13 +17,12 @@ def angle_eval(x:torch.Tensor, angle:torch.Tensor, args, augmentator:AugmentData
     with open(log_path.joinpath(args.ang_eval_index_name), 'r') as json_file:
         category_index_map:dict = json.load(json_file)
     ckpt = torch.load(log_path.joinpath(args.ang_eval_model_name))
-
+    
     net_args = category_index_map["__model_parameters__"]
     ass_args = category_index_map["__assertion_args__"]
     assert ass_args["num_classes"] == len(args.categories)
     assert ass_args["num_disc_angles"] == args.num_disc_angles
     assert ass_args["angle_deadzone"] == args.angle_deadzone
-    # assert ass_args["angles"] == [angles.tolist() for angles in augmentator.gen_roll_pitch_yaw(False)] 
     model = PointNetAngularClassifier(**net_args).to(args.device)
     model.load_state_dict(ckpt["state_dict"])
     model.eval()
@@ -36,7 +35,7 @@ def angle_eval(x:torch.Tensor, angle:torch.Tensor, args, augmentator:AugmentData
     accuracy_y = correct[1].item() / total
     accuracy_z = correct[2].item() / total
     avg_accuracy = sum([accuracy_x, accuracy_y, accuracy_z])/3
-
+    
     return avg_accuracy
 
 @torch.no_grad()
@@ -51,7 +50,6 @@ def cate_eval(x:torch.Tensor, cate:torch.Tensor, args, augmentator:AugmentData) 
     assert ass_args["num_classes"] == len(args.categories)
     assert ass_args["num_disc_angles"] == args.num_disc_angles
     assert ass_args["angle_deadzone"] == args.angle_deadzone
-    # assert ass_args["angles"] == [angles.tolist() for angles in augmentator.gen_roll_pitch_yaw(False)] 
     model = PointNetClassifier(**net_args).to(args.device)
     model.load_state_dict(ckpt["state_dict"])
     model.eval()

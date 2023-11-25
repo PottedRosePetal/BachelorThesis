@@ -1,8 +1,6 @@
 import torch
 from pytorch3d.transforms import euler_angles_to_matrix
 
-
-
 PI_3_2 = torch.pi*3/2
 PI_1_2 = torch.pi/2
 PI_2 = torch.pi*2
@@ -23,11 +21,15 @@ class AugmentData():
         assert self.num_disc_angles > 0
         self.jitter_percentage = args.jitter_percentage
         self.angle_deadzone = args.angle_deadzone
-        assert self.angle_deadzone < PI
+        assert self.angle_deadzone <= PI # no space for angles to exist if bigger/equal to PI
         self.angle_tensor, self.rotation_matrices = self.create_rotation_matrices()
         self.augmentation_count = args.aug_multiplier
 
     def check_unique_rotations(self, rotation_matrices, angle_tensor):
+        """
+        Utility function to check rotation angles produced\n
+        Filters out angles that are almost identical and throws exception
+        """
         differences = []
         def radians_to_degrees(angles_radians):
             return angles_radians * 180.0 / torch.pi
@@ -55,6 +57,9 @@ class AugmentData():
         return angle_tensor, rotation_matrices
 
     def get_rand_rot_matrix(self, batch_size) -> torch.Tensor:
+        """
+        returns a batch with randomly selected rotation matrices from the rotation matrices the class generated previously
+        """
         random_indices = torch.randint(0, self.rotation_matrices.shape[0], (batch_size,))
         self.angles = self.angle_tensor[random_indices]
         rand_rotation_matrices = self.rotation_matrices[random_indices]
@@ -89,13 +94,14 @@ class AugmentData():
         return rotated_pointcloud
 
     def augment_data(self, data:dict, it:int) -> dict:
+        """
+        function called to augment data. returns dict with keys:\n
+            pointcloud, cate, id, shift, scale, angle\n
+        shift and angle are set to none.
+        """
         new_id = data["id"] + torch.tensor([float(f".{i+1}") for i in range(data["id"].size(0))])
         augmented_pointcloud_tensor = self.apply_augmentation(data['pointcloud'])
 
-        # pointcloud = o3d.geometry.PointCloud()
-        # pointcloud.points = o3d.utility.Vector3dVector(jittered_pointcloud_tensor[0,:,:].numpy())
-        # o3d.visualization.draw_geometries([pointcloud])
-        # exit()
         return {
             'pointcloud': augmented_pointcloud_tensor, 
             'cate': data["cate"], 
@@ -151,7 +157,9 @@ class AugmentData():
         return pitch
 
     def gen_roll_pitch_yaw(self, return_single_tensor = True) -> tuple[torch.Tensor,torch.Tensor,torch.Tensor] | torch.Tensor:
-        
+        """
+        generates and checks augmentation angles roll, pitch and yaw. 
+        """
         pitch = self.gen_pitch()
         roll = torch.linspace(0, PI, pitch.shape[-1]+1)[:-1]
         yaw = torch.linspace(0, PI, pitch.shape[-1]+1)[:-1]
@@ -167,6 +175,7 @@ class AugmentData():
             assert pitch.shape[-1] ==  roll.shape[-1] == yaw.shape[-1] == self.num_disc_angles
             assert not torch.isnan(pitch).any()
         except AssertionError as AssErr:
+            print("Assertion Error caught")
             print(pitch.shape, roll.shape, yaw.shape, self.num_disc_angles)
             raise AssErr
 
@@ -178,6 +187,9 @@ class AugmentData():
         return roll,pitch,yaw
 
     def rand_angles(self, batch_size:int) -> torch.Tensor:
+        """
+        returns a batch with randomly selected angles from the angles the class generated previously
+        """
         random_rotations = torch.randint(0, self.angle_tensor.size(0), (batch_size,))
         return self.angle_tensor[random_rotations]
 

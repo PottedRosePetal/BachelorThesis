@@ -1,17 +1,21 @@
-import os
-import time
 import math
-import argparse
 import torch
 from tqdm.auto import tqdm
 
-from utils.dataset import *
-from utils.misc import *
-from utils.data import *
-from models.vae_gaussian import *
-from models.vae_flow import *
-from models.flow import add_spectral_norm, spectral_norm_power_iteration
-from evaluation import *
+from utils.dataset import  cate_to_index
+from utils.augmentation import AugmentData
+from utils.initialize import (
+    load_test_iterators, 
+    get_args, 
+    init_test_logging,
+    load_model_eval
+    )
+from evaluation import (
+    compute_all_metrics, 
+    jsd_between_point_cloud_sets, 
+    cate_eval, 
+    angle_eval
+    )
 
 def normalize_point_clouds(pcs, mode, logger):
     if mode is None:
@@ -32,133 +36,63 @@ def normalize_point_clouds(pcs, mode, logger):
         pcs[i] = pc
     return pcs
 
-
-# Arguments
-parser = argparse.ArgumentParser()
-parser.add_argument('--ckpt', type=str, default='./pretrained/GEN_airplane.pt')
-parser.add_argument('--categories', type=str_list, default=['airplane'])
-parser.add_argument('--save_dir', type=str, default='./results')
-parser.add_argument('--device', type=str, default='cuda')
-# Datasets and loaders
-parser.add_argument('--dataset_path', type=str, default='./data/shapenet.hdf5')
-parser.add_argument('--batch_size', type=int, default=64)
-# Sampling
-parser.add_argument('--sample_num_points', type=int, default=2048)
-parser.add_argument('--normalize', type=str, default='shape_bbox', choices=[None, 'shape_unit', 'shape_bbox'])
-parser.add_argument('--seed', type=int, default=9988)
-# Evaluation Model Params
-parser.add_argument('--eval_model_path', type=str, default='./logs_cls/CLS_2023_08_10__11_10_24')
-parser.add_argument('--eval_index_name', type=str, default='ClassIndexing.json')
-parser.add_argument('--eval_model_name', type=str, default='ckpt_0.000000_10000.pt')
-
-args = parser.parse_args()
-
-
-# Checkpoint
+args = get_args("test")
+augmentator = AugmentData(args)
 ckpt = torch.load(args.ckpt)
-seed_all(args.seed)
+logger = init_test_logging(args)
+model = load_model_eval(args, logger, ckpt)
+test_iter, dset_size = load_test_iterators(args, logger, augmentator)
 
-
-cate_iter = args.categories if args.categories != ["all"] else cate_to_list
-
-
-
-# Logging
-save_dir = os.path.join(args.save_dir, 'GEN_all_%s_%d' % ('_'.join(args.categories), int(time.time())) )
-if not os.path.exists(save_dir):
-    os.makedirs(save_dir)
-logger = get_logger('test', save_dir)
-for k, v in vars(args).items():
-    logger.info('[ARGS::%s] %s' % (k, repr(v)))
-
-# Model
-logger.info('Loading model...')
-if ckpt['args'].model == 'gaussian':
-    model = GaussianVAE(ckpt['args']).to(args.device)
-elif ckpt['args'].model == 'flow':
-    model = FlowVAE(ckpt['args']).to(args.device)
-logger.info(repr(model))
-# if ckpt['args'].spectral_norm:
-#     add_spectral_norm(model, logger=logger)
-model.load_state_dict(ckpt['state_dict'])
-
-
-# Loop for checking all categories
-# Datasets and loaders
-logger.info(f'Loading dataset...')
-test_dset = ShapeNetCore(
-    path=args.dataset_path,
-    cates=cate_iter,
-    split='test',
-    scale_mode=args.normalize,
-    seed = args.seed,
-    logger=logger,
-    even_out=False
-)
-
-logger.info(f'[Test] Starting Test...')
 ref_pcs = []
 ref_cates = []
-ids = []
-for i, data in enumerate(test_dset.balanced_iter()):
-    ref_pcs.append(data['pointcloud'].unsqueeze(0))
-    ref_cates.append(data['cate'])
-    ids.append(str(data["id"])+data['cate'])
+ref_angles = []
+
+for i, data in enumerate(test_iter):
+    if i >= 20:
+        break
+    ref_pcs.append(data['pointcloud'].cpu())
+    ref_cates.append(torch.tensor([cate_to_index(ref_cate) for ref_cate in data['cate']]).unsqueeze(0))
+    ref_angles.append(data['angle'])
+
 ref_pcs = torch.cat(ref_pcs, dim=0)
+ref_cates = torch.cat(ref_cates, dim=0)
 
-ids_unique = len(list(set(ids))) == len(ids)
-logger.info(f"[Test] All IDs unique: {ids_unique}")
-
-# Generate Point Clouds
 gen_pcs = []
+correct_angle_number = []
 correct_class_number = 0
-for i in tqdm(range(0, math.ceil(len(test_dset) / args.batch_size)), 'Generate'):
+
+for i in tqdm(range(0, math.ceil(len(ref_pcs)/args.test_batch_size)), 'Generate'):
     with torch.no_grad():
-        z = torch.randn([args.batch_size, ckpt['args'].latent_dim]).to(args.device)
-        x = model.sample(z, args.sample_num_points, flexibility=ckpt['args'].flexibility, category_index=cate_to_index(ref_cates[i]))
+        z = torch.randn([args.test_batch_size, ckpt['args'].latent_dim]).to(args.device)
+        x = model.sample(
+            z,
+            args.sample_num_points, 
+            flexibility=ckpt['args'].flexibility, 
+            category_index=ref_cates[i,:].to(args.device),
+            angles=augmentator.ind_from_angle(ref_angles[i])
+            )
+        correct_class_number += cate_eval(x.to(args.device), ref_cates[i].to(args.device), args, augmentator)
+        correct_angle_number.append(angle_eval(x, ref_angles[i], args, augmentator))
         gen_pcs.append(x.detach().cpu())
-        correct_class_number += cate_eval(x, ref_cates[i], args)
-all_class_number = len(gen_pcs) * args.batch_size
-gen_pcs = torch.cat(gen_pcs, dim=0)[:len(test_dset)]
-if args.normalize is not None:
-    gen_pcs = normalize_point_clouds(gen_pcs, mode=args.normalize, logger=logger)
 
-print(f"Correct Categories: {correct_class_number/all_class_number}")
-exit()
-# assumption regarding classes: gen_pcs and ref_pcs get compared in the same order and not inverted or anything. 
-# I looked and couldnt find any inversion or order change so far.
+all_class_number = len(gen_pcs) * args.test_batch_size
+gen_pcs = torch.cat(gen_pcs, dim=0)[:args.test_batch_size]
 
-# Denormalize point clouds, all shapes have zero mean.
-# [WARNING]: Do NOT denormalize!
-# ref_pcs *= val_dset.stats['std']
-# gen_pcs *= val_dset.stats['std']
+if args.scale_mode is not None:
+    gen_pcs = normalize_point_clouds(gen_pcs, mode=args.scale_mode, logger=logger)
 
+torch.cuda.empty_cache()
 with torch.no_grad():
-
-    results = {} #compute_all_metrics(gen_pcs.to(args.device), ref_pcs.to(args.device), args.batch_size)
+    results = compute_all_metrics(gen_pcs.to(args.device), ref_pcs.to(args.device), args.test_batch_size)
     results = {k:v.item() for k, v in results.items()}
-
-    results["category_nn"] = categorize_nn(
-        gen_pcs.to(args.device), 
-        ref_cates
-        )
-
-    print(categorize_nn(ref_pcs.to(args.device), ref_cates))
-
     results['jsd'] = jsd_between_point_cloud_sets(gen_pcs.cpu().numpy(), ref_pcs.cpu().numpy())
-    # results["category"] = compute_category_metric(
-    #     gen_pcs.to(args.device), 
-    #     ref_pcs.to(args.device), 
-    #     ref_cates, 
-    #     args.batch_size
-    #     )
+    results["category"] = correct_class_number/all_class_number
+    results["angle"] = sum(correct_angle_number)/len(correct_angle_number)
 
-# ref_avg = torch.mean(torch.tensor([results["category"][category]["ref_cate-ref_no_cate"] for category in list(set(ref_cates))]))
-# sample_avg = torch.mean(torch.tensor([results["category"][category]["sample-ref_no_cate"] for category in list(set(ref_cates))]))
-
-# logger.info(f'[Test] Coverage  | {results["lgan_cov-CD"]:.6f}')
-# logger.info(f'[Test] MinMatDis | {results["lgan_mmd-CD"]:.6f}')
-# logger.info(f'[Test] 1NN-Accur | {results["1-NN-CD-acc"]:.6f}')
+logger.info(f'[Test] Coverage  | {results["lgan_cov-CD"]:.6f}')
+logger.info(f'[Test] MinMatDis | {results["lgan_mmd-CD"]:.6f}')
+logger.info(f'[Test] 1NN-Accur | {results["1-NN-CD-acc"]:.6f}')
 logger.info(f'[Test] JsnShnDis | {results["jsd"]:.6f}')
-logger.info(f'[Test] CateMatch | {results["category_nn"]:.06f}')
+logger.info(f'[Test] Cat-Match | {results["category"]:.06f}')
+logger.info(f'[Test] Ang-Match | {results["angle"]:.06f}')
 logger.info('[Test] Test done.')
